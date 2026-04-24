@@ -1,37 +1,35 @@
 import { useEffect, useState } from 'react'
-import { Users, CreditCard, TrendingUp, AlertCircle } from 'lucide-react'
+import { Users, CreditCard, TrendingUp, ShieldAlert, CheckSquare, BookOpen, Clock } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { useAuth } from '@/contexts/AuthContext'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import type { FeePayment, Student } from '@/lib/database.types'
 
-interface Stats {
-  totalStudents: number
-  activeStudents: number
-  totalCollected: number
-  pendingPayments: number
-}
-
 interface RecentPayment extends FeePayment {
-  students: Pick<Student, 'name' | 'class'> | null
+  students: Pick<Student, 'name' | 'class' | 'section'> | null
 }
 
 export function DashboardPage() {
-  const [stats, setStats] = useState<Stats>({ totalStudents: 0, activeStudents: 0, totalCollected: 0, pendingPayments: 0 })
-  const [recentPayments, setRecentPayments] = useState<RecentPayment[]>([])
+  const { profile, isAdmin, isOfficeStaff, isTeacher } = useAuth()
+  const [stats, setStats] = useState({
+    totalStudents: 0, activeStudents: 0, pendingAdmissions: 0,
+    totalCollected: 0, pendingApprovals: 0, todayAttendance: 0,
+  })
+  const [recent, setRecent] = useState<RecentPayment[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    async function fetchData() {
-      const [studentsRes, paymentsRes, recentRes] = await Promise.all([
+    async function load() {
+      const today = new Date().toISOString().split('T')[0]
+
+      const [studentsRes, paymentsRes, recentRes, attendanceRes] = await Promise.all([
         supabase.from('students').select('*'),
         supabase.from('fee_payments').select('*'),
-        supabase
-          .from('fee_payments')
-          .select('*, students(name, class)')
-          .order('created_at', { ascending: false })
-          .limit(5),
+        supabase.from('fee_payments').select('*, students(name, class, section)')
+          .order('created_at', { ascending: false }).limit(6),
+        supabase.from('attendance').select('id').eq('date', today),
       ])
 
       const students = studentsRes.data ?? []
@@ -40,52 +38,62 @@ export function DashboardPage() {
       setStats({
         totalStudents: students.length,
         activeStudents: students.filter(s => s.status === 'active').length,
+        pendingAdmissions: students.filter(s => s.admission_status === 'pending').length,
         totalCollected: payments
-          .filter(p => p.status === 'paid' || p.status === 'partial')
-          .reduce((sum, p) => sum + (p.amount_paid ?? 0), 0),
-        pendingPayments: payments.filter(p => p.status === 'pending').length,
+          .filter(p => p.approval_status === 'approved')
+          .reduce((s, p) => s + p.amount_paid, 0),
+        pendingApprovals: payments.filter(p => p.approval_status === 'pending').length,
+        todayAttendance: attendanceRes.data?.length ?? 0,
       })
-
-      setRecentPayments((recentRes.data ?? []) as RecentPayment[])
+      setRecent((recentRes.data ?? []) as RecentPayment[])
       setLoading(false)
     }
-
-    fetchData()
+    load()
   }, [])
 
-  const statCards = [
-    { title: 'Total Students', value: stats.totalStudents, sub: `${stats.activeStudents} active`, icon: Users, color: 'text-blue-600', bg: 'bg-blue-50' },
-    { title: 'Fees Collected', value: formatCurrency(stats.totalCollected), sub: 'All time', icon: TrendingUp, color: 'text-green-600', bg: 'bg-green-50' },
-    { title: 'Pending Payments', value: stats.pendingPayments, sub: 'Needs attention', icon: AlertCircle, color: 'text-orange-600', bg: 'bg-orange-50' },
-    { title: 'Fee Records', value: recentPayments.length > 0 ? 'Active' : '—', sub: 'Tracking enabled', icon: CreditCard, color: 'text-purple-600', bg: 'bg-purple-50' },
+  type StatCard = { label: string; value: string | number; sub: string; icon: React.ElementType; color: string; bg: string; show: boolean }
+
+  const statCards: StatCard[] = [
+    { label: 'Total Students',    value: stats.totalStudents,    sub: `${stats.activeStudents} active`,   icon: Users,       color: 'text-blue-600',   bg: 'bg-blue-50',   show: isAdmin || isOfficeStaff },
+    { label: 'Fees Collected',    value: formatCurrency(stats.totalCollected), sub: 'Approved payments', icon: TrendingUp,  color: 'text-emerald-600',bg: 'bg-emerald-50',show: isAdmin || isOfficeStaff },
+    { label: 'Pending Approvals', value: stats.pendingApprovals, sub: 'Awaiting admin review',            icon: ShieldAlert, color: 'text-amber-600',  bg: 'bg-amber-50',  show: isAdmin },
+    { label: 'New Admissions',    value: stats.pendingAdmissions,sub: 'Pending approval',                icon: Clock,       color: 'text-purple-600', bg: 'bg-purple-50', show: isAdmin },
+    { label: 'Today Attendance',  value: stats.todayAttendance,  sub: 'Records today',                   icon: CheckSquare, color: 'text-teal-600',   bg: 'bg-teal-50',   show: isAdmin || isTeacher },
+    { label: 'Fee Records',       value: recent.length,          sub: 'Recent transactions',             icon: CreditCard,  color: 'text-indigo-600', bg: 'bg-indigo-50', show: isAdmin || isOfficeStaff },
   ]
 
-  if (loading) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-      </div>
-    )
-  }
+  if (loading) return (
+    <div className="flex h-full items-center justify-center py-24">
+      <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+    </div>
+  )
+
+  const greeting = isAdmin ? 'Administrator' : isOfficeStaff ? 'Office Staff' : 'Teacher'
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-4 md:p-6 space-y-6 max-w-7xl mx-auto">
+      {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-        <p className="text-sm text-muted-foreground">Overview of your school</p>
+        <h1 className="text-2xl font-bold text-gray-900">
+          Welcome, {profile?.name ?? greeting}
+        </h1>
+        <p className="text-sm text-muted-foreground mt-0.5">
+          {new Date().toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+        </p>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {statCards.map(({ title, value, sub, icon: Icon, color, bg }) => (
-          <Card key={title}>
-            <CardContent className="p-6">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">{title}</p>
-                  <p className="mt-1 text-2xl font-bold text-gray-900">{value}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">{sub}</p>
+      {/* Stat Cards */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        {statCards.filter(c => c.show).map(({ label, value, sub, icon: Icon, color, bg }) => (
+          <Card key={label} className="hover:shadow-md transition-shadow">
+            <CardContent className="p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
+                  <p className="mt-1 text-2xl font-bold text-gray-900 leading-none">{value}</p>
+                  <p className="mt-1.5 text-xs text-muted-foreground">{sub}</p>
                 </div>
-                <div className={`rounded-lg p-2 ${bg}`}>
+                <div className={`shrink-0 rounded-xl p-2.5 ${bg}`}>
                   <Icon className={`h-5 w-5 ${color}`} />
                 </div>
               </div>
@@ -94,44 +102,66 @@ export function DashboardPage() {
         ))}
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Recent Fee Payments</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {recentPayments.length === 0 ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">No payments recorded yet.</p>
-          ) : (
-            <div className="space-y-3">
-              {recentPayments.map(payment => (
-                <div key={payment.id} className="flex items-center justify-between rounded-lg border px-4 py-3">
-                  <div>
-                    <p className="text-sm font-medium text-gray-900">
-                      {payment.students?.name ?? 'Unknown Student'}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      Class {payment.students?.class} · {formatDate(payment.payment_date)} · #{payment.receipt_number}
-                    </p>
+      {/* Teacher quick links */}
+      {isTeacher && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Card className="hover:shadow-md transition-shadow cursor-pointer border-2 border-dashed border-border hover:border-primary/40 hover:bg-primary/2">
+            <CardContent className="flex items-center gap-4 p-5">
+              <div className="rounded-xl bg-teal-50 p-3">
+                <CheckSquare className="h-6 w-6 text-teal-600" />
+              </div>
+              <div>
+                <p className="font-semibold text-gray-900">Mark Attendance</p>
+                <p className="text-sm text-muted-foreground">Record today's class attendance</p>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="hover:shadow-md transition-shadow cursor-pointer border-2 border-dashed border-border hover:border-primary/40 hover:bg-primary/2">
+            <CardContent className="flex items-center gap-4 p-5">
+              <div className="rounded-xl bg-indigo-50 p-3">
+                <BookOpen className="h-6 w-6 text-indigo-600" />
+              </div>
+              <div>
+                <p className="font-semibold text-gray-900">Enter Grades</p>
+                <p className="text-sm text-muted-foreground">Add exam results and marks</p>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Recent Payments */}
+      {(isAdmin || isOfficeStaff) && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle>Recent Fee Payments</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            {recent.length === 0 ? (
+              <p className="py-10 text-center text-sm text-muted-foreground">No payments recorded yet.</p>
+            ) : (
+              <div className="divide-y divide-border">
+                {recent.map(p => (
+                  <div key={p.id} className="flex items-center justify-between gap-3 px-5 py-3.5 hover:bg-secondary/40 transition-colors">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-gray-900 truncate">{p.students?.name ?? '—'}</p>
+                      <p className="text-xs text-muted-foreground">
+                        Class {p.students?.class}-{p.students?.section} · {formatDate(p.payment_date)} · <span className="font-mono">#{p.receipt_number}</span>
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="text-sm font-bold text-gray-900">{formatCurrency(p.amount_paid)}</span>
+                      <Badge variant={p.approval_status === 'approved' ? 'success' : p.approval_status === 'rejected' ? 'destructive' : 'pending'}>
+                        {p.approval_status}
+                      </Badge>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-sm font-semibold text-gray-900">
-                      {formatCurrency(payment.amount_paid)}
-                    </span>
-                    <Badge
-                      variant={
-                        payment.status === 'paid' ? 'success' :
-                        payment.status === 'partial' ? 'warning' : 'outline'
-                      }
-                    >
-                      {payment.status}
-                    </Badge>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }
